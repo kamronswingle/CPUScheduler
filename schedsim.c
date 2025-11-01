@@ -319,7 +319,7 @@ void wait_threads() {
         pthread_join(processes[i].thread, NULL); // Join the thread
         sem_destroy(&processes[i].semaphore); // Also destroy the semaphore
 
-        processes[i].waiting_time = processes[i].turnaround_time - processes[i].burst; // Calculate waiting time, could move to print as well
+        //processes[i].waiting_time = processes[i].turnaround_time - processes[i].burst;
     }
 }
 
@@ -339,6 +339,11 @@ void print_results() {
             strcpy(algoString, "Priority");
             break;
     }
+
+    for (int i = 0; i < process_count; i++) {
+        processes[i].waiting_time = processes[i].turnaround_time - processes[i].burst;
+    }
+
     printf("\n====================== %s Scheduling ======================\n", algoString);
     printf("------------------------------------------------------------\n");
     printf("PID\tArr\tBurst\tStart\tFinish\tWait\tResp\tTurn\n");
@@ -429,15 +434,17 @@ int main(int argc, char* argv[]) {
     }
 
     parse_file(filename);
+
     spawn_threads();
+    
     run_scheduler();
-    wait_threads();
 
     sem_destroy(&scheduler_sem);
     pthread_mutex_destroy(&scheduler_mutex);
     
     print_results();
 
+    wait_threads();
     free(processes);
 
     return 0;
