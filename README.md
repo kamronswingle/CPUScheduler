@@ -1,4 +1,9 @@
-
+Name: Kamron Swingle
+Course: CPSC 380 - Operating Systems
+Email: swingle@chapman.edu
+Assignment: Assignment 4 - CPU Scheduling Simulator
+File: schedsim.c
+School: Chapman University
 
 Help Recieved from freind outside of school for basic debugging and process cleanup, more optimizing:
 Name: Ian McQuerrey
@@ -57,7 +62,10 @@ if (new_proc.priority < current_proc.priority)
 
 
 Instructions to Compile:
-gcc -o schedsim schedsim.c -lpthread
+gcc schedsim.c -o schedsim -lpthread
 
 Demo Run (FCFS):
 ./schedsim -f -i processes.csv
+
+Demo Run (Round Robin)
+./schedsim -rr -q 3 -i processes.csv
