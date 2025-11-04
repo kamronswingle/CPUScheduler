@@ -35,7 +35,7 @@ typedef struct {
     int burst;
     int priority;
     
-    // dyanamic info
+    // dyanamic info per process
     int remaining_time;
     sem_t semaphore;
     pthread_t thread;
