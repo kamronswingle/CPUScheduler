@@ -1,22 +1,25 @@
+/*
+    Name: Kamron Swingle
+    Course: CPSC 380 - Operating Systems
+    Email: swingle@chapman.edu
+    Assignment: Assignment 4 - Reader Writer Synchronization
+    File: rw_main.c
+    School: Chapman University
+*/
+
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <getopt.h>
-// one thread per process and coordinates scheduling among them with semaphores.
-// needs to surpport fcfs, sjf, rr, priority scheduling algorithms.
 
-// Part 1 - File processing (done)
-// Part 2 - Queueing
-// Part 3 - Threading
-// Part 4 - Scheduling
-// Part 5 - Scheduling algorithms
-// Part 6 - Metrics
-
+// Constants
 #define MAX_PROCESSES 100
 #define BUFFER_SIZE 256
+#define MAX_GANTT (MAX_PROCESSES * 100)
 
+// Scheduling Algorithms
 typedef enum {
     FCFS,
     SJF,
@@ -24,72 +27,77 @@ typedef enum {
     PRIORITY
 } SchedulingAlgorithm;
 
+// Process structure (individual process info)
 typedef struct {
-    char pid[32]; // random max size for PID
+    // Process info (given in CSV)
+    char pid[32];
     int arrival;
     int burst;
     int priority;
     
-    // Runtime state
+    // dyanamic info
     int remaining_time;
     sem_t semaphore;
     pthread_t thread;
     
-    // Metrics
+    // metrics
     int start_time;
     int finish_time;
     int waiting_time;
     int response_time;
     int turnaround_time;
     
-    int started;  // Flag: has this process run yet?
-    int finished; // Flag: is this process done?
+    // helper flags
+    int started; 
+    int finished;
     int in_ready_queue;
 } Process;
 
-// Add after ready_count declaration
+// gantt chart entry
 typedef struct {
     char pid[32];
     int start;
     int end;
 } GanttEntry;
 
-GanttEntry gantt_chart[MAX_PROCESSES * 100];
-int gantt_count = 0;
-
-sem_t scheduler_sem; // global semaphore for scheduler to signal processes
-
-pthread_mutex_t scheduler_mutex = PTHREAD_MUTEX_INITIALIZER;
-
+// process management
 Process *processes = NULL;
 int process_count = 0;
-int current_time = 0;
-SchedulingAlgorithm algorithm = FCFS; // default algorithm
-int time_quantum = 1;
 
+// scheduling state
+SchedulingAlgorithm algorithm = FCFS; // default algorithm
+int time_quantum = 1; // default time quantum for RR
+int current_time = 0; 
 
 // Ready queue
 Process* ready_queue[MAX_PROCESSES];
 int ready_count = 0;
 
+// gantt chart
+GanttEntry gantt_chart[MAX_PROCESSES * 100];
+int gantt_count = 0;
+
+// synchronization
+sem_t scheduler_sem; // global semaphore for scheduler to signal processes
+pthread_mutex_t scheduler_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 // Function prototypes
+
+// initialaization and cleanup
+void initialize_scheduler(void);
+void cleanup_scheduler(void);
 
 // Parsing
 void parse_file(const char* filename);
-// TODO: long opts
+
+// Thread management
+void spawn_threads(void);
+void wait_threads(void);
+void *process_thread(void *arg);
 
 // Queue Operations
 void enqueue_process(Process* process);
 void dequeue_process(Process* process);
-
-// Spawning threads
-void spawn_threads();
-
-// Threading
-void* process_thread(void* arg);
-
-// Thread cleanup
-void wait_threads();
 
 // Scheduling
 void run_scheduler();
@@ -98,217 +106,99 @@ Process* select_next_process();
 // Printing
 void print_results();
 void print_gantt_chart();
-
-// Long opts
 static void print_usage(const char *progname);
 
-static void print_usage(const char *progname) {
-    fprintf(stderr,
-        "Usage: %s [options]\n"
-        "Options:\n"
-        "-f,  --fcfs                Use FCFS scheduling\n"
-        "-s,  --sjf                 Use SJF (Shortest Job First) scheduling\n"
-        "-r,  --rr                  Use Round Robin scheduling\n"
-        "-p,  --priority            Use Priority scheduling\n"
-        "-i,  --input <file>        Input CSV filename (required)\n"
-        "-q,  --quantum <N>         Time quantum for Round Robin (default 1)\n"
-        "-h,  --help                Show this help message\n",
-        progname);
-}
-
-
-
-void* process_thread(void *arg) {
-    Process *process = (Process*)arg;
+int main(int argc, char* argv[]) {
+    char* filename = NULL;
+    int algo_set = 0;
     
-    while (process->remaining_time > 0) {
-        sem_wait(&process->semaphore);  // Wait for scheduler
 
-        // Check if we should exit (safety check)
-        if (process->finished) {
-            break;
+    static struct option long_opts[] = {
+        {"fcfs", no_argument, 0, 'f'},
+        {"sjf", no_argument, 0, 's'},
+        {"rr", no_argument, 0, 'r'},
+        {"priority", no_argument, 0, 'p'},
+        {"input", required_argument, 0, 'i'},
+        {"quantum", required_argument, 0, 'q'},
+        {"help", no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
+
+    int opt;
+    while ((opt = getopt_long(argc, argv, "fsrpi:q:h", long_opts, NULL)) != -1) {
+        switch (opt) {
+            case 'f': 
+                algorithm = FCFS; 
+                algo_set = 1; 
+                break;
+            case 's': 
+                algorithm = SJF; 
+                algo_set = 1; 
+                break;
+            case 'r':
+                algorithm = RR; 
+                algo_set = 1; 
+                break;
+            case 'p': 
+                algorithm = PRIORITY; 
+                algo_set = 1; 
+                break;
+            case 'i': 
+                filename = optarg; 
+                break;
+            case 'q': 
+                time_quantum = atoi(optarg); 
+                break;
+            case 'h': // If the user needs help, print it, but then clean up
+                print_usage(argv[0]);
+                free(processes);
+                sem_destroy(&scheduler_sem);
+                exit(0);
+            default:
+                print_usage(argv[0]);
+                free(processes);
+                sem_destroy(&scheduler_sem);
+                exit(1);
         }
-        
-        pthread_mutex_lock(&scheduler_mutex);
-        
-        // Execute one unit of work
-        if (process->remaining_time > 0) {
-            if (!process->started) {
-                process->started = 1;
-                process->start_time = current_time;
-                process->response_time = current_time - process->arrival;  // Calculate response time
-            }
-            process->remaining_time--;
-        }
-        
-        // Check if finished
-        if (process->remaining_time == 0) {
-            process->finished = 1;
-            process->finish_time = current_time + 1; // +1 because we finish at end of this time unit
-            process->turnaround_time = process->finish_time - process->arrival;
-        }
-        
-        pthread_mutex_unlock(&scheduler_mutex);
-        
-        sem_post(&scheduler_sem);  // Signal scheduler we're done with this cycle
     }
-    return NULL;
+
+    if (!algo_set || !filename) {
+        fprintf(stderr, "Error: must specify algorithm and input file.\n\n");
+        print_usage(argv[0]);
+        free(processes);
+        sem_destroy(&scheduler_sem);
+        return 1;
+    }
+
+    // Initialize and run scheduler
+    initialize_scheduler();
+    parse_file(filename);
+    spawn_threads();
+    run_scheduler();
+    wait_threads();
+    print_results();
+    cleanup_scheduler();
+
+    return 0;
 }
 
-Process* select_next_process() {
-    if (ready_count == 0) {
-        return NULL;
+// initialaization and cleanup
+void initialize_scheduler(void) {
+    processes = malloc(sizeof(Process) * MAX_PROCESSES);
+    if (processes == NULL) {
+        perror("Failed to allocate memory for processes");
+        exit(1);
     }
-
-    int selected_index = 0;
-
-    switch (algorithm) {
-        case FCFS:
-            // Just pick first (already in FIFO order)
-            selected_index = 0;
-            break;
-            
-        case SJF:
-            // Find shortest remaining time
-            for (int i = 1; i < ready_count; i++) {
-                if (ready_queue[i]->remaining_time < ready_queue[selected_index]->remaining_time) {
-                    selected_index = i;
-                }
-            }
-            break;
-            
-        case RR:
-            // Round robin - just pick first
-            selected_index = 0;
-            break;
-            
-        case PRIORITY:
-            // Find highest priority (lowest number)
-            for (int i = 1; i < ready_count; i++) {
-                if (ready_queue[i]->priority < ready_queue[selected_index]->priority) {
-                    selected_index = i;
-                }
-            }
-            break;
-    }
-
-    return ready_queue[selected_index];
+    sem_init(&scheduler_sem, 0, 0);
 }
 
-void run_scheduler() {
-    int processes_finished = 0;
-    int time_slice = 0;
-    Process* current_running = NULL;
-    int execution_start = -1;
-
-    while (processes_finished < process_count) {
-        pthread_mutex_lock(&scheduler_mutex);
-
-        // 1. Check for new arrivals
-        for (int i = 0; i < process_count; i++) {
-            if (processes[i].arrival == current_time && !processes[i].in_ready_queue && !processes[i].finished) {
-                enqueue_process(&processes[i]);
-            }
-        }
-
-        // 2. Handle preemption for RR (time quantum expired)
-        if (algorithm == RR && current_running != NULL && !current_running->finished && time_slice >= time_quantum) {
-            // Record Gantt entry
-            if (execution_start != -1) {
-                strcpy(gantt_chart[gantt_count].pid, current_running->pid);
-                gantt_chart[gantt_count].start = execution_start;
-                gantt_chart[gantt_count].end = current_time;
-                gantt_count++;
-            }
-            
-            // Re-queue the preempted process
-            enqueue_process(current_running);
-            current_running = NULL;
-            time_slice = 0;
-            execution_start = -1;
-        }
-        // 2b. Handle preemption for Priority
-        else if (algorithm == PRIORITY && current_running != NULL && !current_running->finished) {
-            // Check if a higher priority process is available
-            for (int i = 0; i < ready_count; i++) {
-                if (ready_queue[i]->priority < current_running->priority) {
-                    // Record Gantt entry
-                    if (execution_start != -1) {
-                        strcpy(gantt_chart[gantt_count].pid, current_running->pid);
-                        gantt_chart[gantt_count].start = execution_start;
-                        gantt_chart[gantt_count].end = current_time;
-                        gantt_count++;
-                    }
-                    
-                    // Preempt current process
-                    enqueue_process(current_running);
-                    current_running = NULL;
-                    time_slice = 0;
-                    execution_start = -1;
-                    break;
-                }
-            }
-        }
-
-        // 3. Select next process if none is running
-        if (current_running == NULL || current_running->finished) {
-            if (current_running != NULL && current_running->finished) {
-                // Record Gantt entry for finished process
-                if (execution_start != -1) {
-                    strcpy(gantt_chart[gantt_count].pid, current_running->pid);
-                    gantt_chart[gantt_count].start = execution_start;
-                    gantt_chart[gantt_count].end = current_time;
-                    gantt_count++;
-                    execution_start = -1;
-                }
-                processes_finished++;
-            }
-            
-            current_running = select_next_process();
-            time_slice = 0;
-            
-            if (current_running != NULL) {
-                dequeue_process(current_running);  // Remove from ready queue
-                execution_start = current_time;    // Mark when this process starts
-            }
-        }
-
-        pthread_mutex_unlock(&scheduler_mutex);
-
-        // 4. Execute one cycle if we have a process
-        if (current_running != NULL) {
-            sem_post(&current_running->semaphore);  // Signal process to run
-            sem_wait(&scheduler_sem);               // Wait for it to finish cycle
-            
-            time_slice++;
-        }
-
-        // 5. Advance time
-        current_time++;
-    }
+void cleanup_scheduler(void) {
+    sem_destroy(&scheduler_sem);
+    pthread_mutex_destroy(&scheduler_mutex);
+    free(processes);
 }
 
-void enqueue_process(Process* process) {
-    if (!process->in_ready_queue && !process->finished) {
-        ready_queue[ready_count] = process;
-        ready_count++;
-        process->in_ready_queue = 1;
-    }
-}
-
-void dequeue_process(Process* process) {
-    for (int i = 0; i < ready_count; i++) {
-        if (ready_queue[i] == process) {
-            for (int j = i; j < ready_count - 1; j++) {
-                ready_queue[j] = ready_queue[j + 1];
-            }
-            ready_count--;
-            process->in_ready_queue = 0;
-            break;
-        }
-    }
-}
-
+// file parsing
 void parse_file(const char* filename) {
     FILE *file = fopen(filename, "r");
     if (file == NULL) {
@@ -371,11 +261,215 @@ void wait_threads() {
     for (int i = 0; i < process_count; i++) {
         pthread_join(processes[i].thread, NULL); // Join the thread
         sem_destroy(&processes[i].semaphore); // Also destroy the semaphore
-
-        //processes[i].waiting_time = processes[i].turnaround_time - processes[i].burst;
     }
 }
 
+void* process_thread(void *arg) {
+    Process *process = (Process*)arg;
+    
+    while (process->remaining_time > 0) {
+        sem_wait(&process->semaphore);  // Wait for scheduler
+
+        // Check if we should exit (safety check)
+        if (process->finished) {
+            break;
+        }
+        
+        pthread_mutex_lock(&scheduler_mutex);
+        
+        // Execute one unit of work
+        if (process->remaining_time > 0) {
+            if (!process->started) {
+                process->started = 1;
+                process->start_time = current_time;
+                process->response_time = current_time - process->arrival;  // Calculate response time
+            }
+            process->remaining_time--;
+        }
+        
+        // Check if finished
+        if (process->remaining_time == 0) {
+            process->finished = 1;
+            process->finish_time = current_time + 1; // +1 because we finish at end of this time unit
+            process->turnaround_time = process->finish_time - process->arrival;
+        }
+        
+        pthread_mutex_unlock(&scheduler_mutex);
+        
+        sem_post(&scheduler_sem);  // Signal scheduler we're done with this cycle
+    }
+    return NULL;
+}
+
+
+// queue operations
+void enqueue_process(Process* process) {
+    if (!process->in_ready_queue && !process->finished) {
+        ready_queue[ready_count] = process;
+        ready_count++;
+        process->in_ready_queue = 1;
+    }
+}
+
+void dequeue_process(Process* process) {
+    for (int i = 0; i < ready_count; i++) {
+        if (ready_queue[i] == process) {
+            for (int j = i; j < ready_count - 1; j++) {
+                ready_queue[j] = ready_queue[j + 1];
+            }
+            ready_count--;
+            process->in_ready_queue = 0;
+            break;
+        }
+    }
+}
+
+// scheduling
+Process* select_next_process() {
+    if (ready_count == 0) {
+        return NULL;
+    }
+
+    int selected_index = 0;
+
+    switch (algorithm) {
+        case FCFS:
+            // Just pick first (already in FIFO order)
+            selected_index = 0;
+            break;
+            
+        case SJF:
+            // Find shortest remaining time
+            for (int i = 1; i < ready_count; i++) {
+                if (ready_queue[i]->remaining_time < ready_queue[selected_index]->remaining_time) {
+                    selected_index = i;
+                }
+            }
+            break;
+            
+        case RR:
+            // Round robin - just pick first
+            selected_index = 0;
+            break;
+            
+        case PRIORITY:
+            // Find highest priority (lowest number)
+            for (int i = 1; i < ready_count; i++) {
+                if (ready_queue[i]->priority < ready_queue[selected_index]->priority) {
+                    selected_index = i;
+                }
+            }
+            break;
+    }
+
+    return ready_queue[selected_index];
+}
+
+void run_scheduler(void) {
+    int processes_finished = 0;
+    int time_slice = 0;
+    Process *current_running = NULL;
+    int execution_start = -1;
+
+    while (processes_finished < process_count) {
+        pthread_mutex_lock(&scheduler_mutex);
+
+        // Step 1: Check for new arrivals
+        for (int i = 0; i < process_count; i++) {
+            if (processes[i].arrival == current_time && 
+                !processes[i].in_ready_queue && 
+                !processes[i].finished) {
+                enqueue_process(&processes[i]);
+            }
+        }
+
+        // Step 2a: Handle Round Robin preemption (time quantum expired)
+        if (algorithm == RR && current_running != NULL && 
+            !current_running->finished && time_slice >= time_quantum) {
+            
+            // Record the partial execution of the preempted process
+            if (execution_start != -1 && gantt_count < MAX_GANTT) {
+                strcpy(gantt_chart[gantt_count].pid, current_running->pid);
+                gantt_chart[gantt_count].start = execution_start;
+                gantt_chart[gantt_count].end = current_time;
+                gantt_count++;
+            }
+            
+            enqueue_process(current_running);
+            current_running = NULL;
+            time_slice = 0;
+            execution_start = -1;
+        }
+        
+        // Step 2b: Handle Priority preemption
+        else if (algorithm == PRIORITY && current_running != NULL && 
+                 !current_running->finished) {
+            
+            // Look for a process with higher priority (lower number)
+            for (int i = 0; i < ready_count; i++) {
+                Process *candidate = ready_queue[i];
+                if (candidate->priority < current_running->priority) {
+                    
+                    // Record the partial execution of the preempted process
+                    if (execution_start != -1 && gantt_count < MAX_GANTT) {
+                        strcpy(gantt_chart[gantt_count].pid, current_running->pid);
+                        gantt_chart[gantt_count].start = execution_start;
+                        gantt_chart[gantt_count].end = current_time;
+                        gantt_count++;
+                    }
+                    
+                    // Requeue the preempted process
+                    enqueue_process(current_running);
+                    
+                    // Switch to the higher priority process
+                    current_running = NULL;
+                    execution_start = -1;
+                    time_slice = 0;
+                    
+                    // Forces rescheduling to pick the higher-priority process
+                    break;
+                }
+            }
+        }
+
+        // Step 3: Select next process if none is running
+        if (current_running == NULL || current_running->finished) {
+            if (current_running != NULL && current_running->finished) {
+                if (execution_start != -1 && gantt_count < MAX_GANTT) {
+                    strcpy(gantt_chart[gantt_count].pid, current_running->pid);
+                    gantt_chart[gantt_count].start = execution_start;
+                    gantt_chart[gantt_count].end = current_time;
+                    gantt_count++;
+                    execution_start = -1;
+                }
+                processes_finished++;
+            }
+            
+            current_running = select_next_process();
+            time_slice = 0;
+            
+            if (current_running != NULL) {
+                dequeue_process(current_running);
+                execution_start = current_time;
+            }
+        }
+
+        // Step 4: Execute one cycle if we have a process
+        if (current_running != NULL) {
+            pthread_mutex_unlock(&scheduler_mutex);
+            sem_post(&current_running->semaphore);
+            sem_wait(&scheduler_sem);
+            time_slice++;
+        } else {
+            pthread_mutex_unlock(&scheduler_mutex);
+        }
+
+        // Step 5: Advance time
+        current_time++;
+    }
+}
+
+// printing results
 void print_results() {
     char algoString[16];
     switch (algorithm) {
@@ -472,87 +566,16 @@ void print_gantt_chart() {
     printf("-\n");
 }
 
-
-
-int main(int argc, char* argv[]) {
-    processes = malloc(sizeof(Process) * MAX_PROCESSES);
-    sem_init(&scheduler_sem, 0, 0);
-
-    char* filename = NULL;
-    int algo_set = 0;
-    
-
-    static struct option long_opts[] = {
-        {"fcfs", no_argument, 0, 'f'},
-        {"sjf", no_argument, 0, 's'},
-        {"rr", no_argument, 0, 'r'},
-        {"priority", no_argument, 0, 'p'},
-        {"input", required_argument, 0, 'i'},
-        {"quantum", required_argument, 0, 'q'},
-        {"help", no_argument, 0, 'h'},
-        {0, 0, 0, 0}
-    };
-
-    int opt;
-    while ((opt = getopt_long(argc, argv, "fsrpi:q:h", long_opts, NULL)) != -1) {
-        switch (opt) {
-            case 'f': 
-                algorithm = FCFS; 
-                algo_set = 1; 
-                break;
-            case 's': 
-                algorithm = SJF; 
-                algo_set = 1; 
-                break;
-            case 'r':
-                algorithm = RR; 
-                algo_set = 1; 
-                break;
-            case 'p': 
-                algorithm = PRIORITY; 
-                algo_set = 1; 
-                break;
-            case 'i': 
-                filename = optarg; 
-                break;
-            case 'q': 
-                time_quantum = atoi(optarg); 
-                break;
-            case 'h': // If the user needs help, print it, but then clean up
-                print_usage(argv[0]);
-                free(processes);
-                sem_destroy(&scheduler_sem);
-                exit(0);
-            default:
-                print_usage(argv[0]);
-                free(processes);
-                sem_destroy(&scheduler_sem);
-                exit(1);
-        }
-    }
-
-    if (!algo_set || !filename) {
-        fprintf(stderr, "Error: must specify algorithm and input file.\n\n");
-        print_usage(argv[0]);
-        free(processes);
-        sem_destroy(&scheduler_sem);
-        return 1;
-    }
-
-    parse_file(filename);
-
-    spawn_threads();
-
-    run_scheduler();
-
-    wait_threads();
-
-    sem_destroy(&scheduler_sem);
-    pthread_mutex_destroy(&scheduler_mutex);
-
-    print_results();
-
-    free(processes);
-
-    return 0;
+static void print_usage(const char *progname) {
+    fprintf(stderr,
+        "Usage: %s [options]\n"
+        "Options:\n"
+        "-f,  --fcfs                Use FCFS scheduling\n"
+        "-s,  --sjf                 Use SJF (Shortest Job First) scheduling\n"
+        "-r,  --rr                  Use Round Robin scheduling\n"
+        "-p,  --priority            Use Priority scheduling\n"
+        "-i,  --input <file>        Input CSV filename (required)\n"
+        "-q,  --quantum <N>         Time quantum for Round Robin (default 1)\n"
+        "-h,  --help                Show this help message\n",
+        progname);
 }
