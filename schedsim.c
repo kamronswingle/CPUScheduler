@@ -2,8 +2,8 @@
     Name: Kamron Swingle
     Course: CPSC 380 - Operating Systems
     Email: swingle@chapman.edu
-    Assignment: Assignment 4 - Reader Writer Synchronization
-    File: rw_main.c
+    Assignment: Assignment 4 - CPU Scheduling Simulator
+    File: schedsim.c
     School: Chapman University
 */
 
@@ -374,7 +374,7 @@ void run_scheduler(void) {
     while (processes_finished < process_count) {
         pthread_mutex_lock(&scheduler_mutex);
 
-        // Step 1: Check for new arrivals
+        // step 1: Check for new arrivals
         for (int i = 0; i < process_count; i++) {
             if (processes[i].arrival == current_time && 
                 !processes[i].in_ready_queue && 
@@ -383,11 +383,11 @@ void run_scheduler(void) {
             }
         }
 
-        // Step 2a: Handle Round Robin preemption (time quantum expired)
+        // step 2a: Handle Round Robin preemption (time quantum expired)
         if (algorithm == RR && current_running != NULL && 
             !current_running->finished && time_slice >= time_quantum) {
             
-            // Record the partial execution of the preempted process
+            // record the partial execution of the preempted process
             if (execution_start != -1 && gantt_count < MAX_GANTT) {
                 strcpy(gantt_chart[gantt_count].pid, current_running->pid);
                 gantt_chart[gantt_count].start = execution_start;
@@ -401,7 +401,7 @@ void run_scheduler(void) {
             execution_start = -1;
         }
         
-        // Step 2b: Handle Priority preemption
+        // step 2b: Handle Priority preemption
         else if (algorithm == PRIORITY && current_running != NULL && 
                  !current_running->finished) {
             
@@ -432,7 +432,7 @@ void run_scheduler(void) {
             }
         }
 
-        // Step 3: Select next process if none is running
+        // step 3: Select next process if none is running
         if (current_running == NULL || current_running->finished) {
             if (current_running != NULL && current_running->finished) {
                 if (execution_start != -1 && gantt_count < MAX_GANTT) {
@@ -454,7 +454,7 @@ void run_scheduler(void) {
             }
         }
 
-        // Step 4: Execute one cycle if we have a process
+        // step 4: Execute one cycle if we have a process
         if (current_running != NULL) {
             pthread_mutex_unlock(&scheduler_mutex);
             sem_post(&current_running->semaphore);
