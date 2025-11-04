@@ -14,3 +14,10 @@ https://www.google.com/search?q=how+to+parse+a+file+in+c+function&sca_esv=913345
 
 Finding first occurrence of string (commas):
 https://www.w3schools.com/c/ref_string_strcspn.php
+
+
+Instructions to Compile:
+gcc -o schedsim schedsim.c -lpthread
+
+Demo Run (FCFS):
+./schedsim -f -i processes.csv

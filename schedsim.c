@@ -47,6 +47,16 @@ typedef struct {
     int in_ready_queue;
 } Process;
 
+// Add after ready_count declaration
+typedef struct {
+    char pid[32];
+    int start;
+    int end;
+} GanttEntry;
+
+GanttEntry gantt_chart[MAX_PROCESSES * 100];
+int gantt_count = 0;
+
 sem_t scheduler_sem; // global semaphore for scheduler to signal processes
 
 pthread_mutex_t scheduler_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -87,6 +97,24 @@ Process* select_next_process();
 
 // Printing
 void print_results();
+void print_gantt_chart();
+
+// Long opts
+static void print_usage(const char *progname);
+
+static void print_usage(const char *progname) {
+    fprintf(stderr,
+        "Usage: %s [options]\n"
+        "Options:\n"
+        "-f,  --fcfs                Use FCFS scheduling\n"
+        "-s,  --sjf                 Use SJF (Shortest Job First) scheduling\n"
+        "-r,  --rr                  Use Round Robin scheduling\n"
+        "-p,  --priority            Use Priority scheduling\n"
+        "-i,  --input <file>        Input CSV filename (required)\n"
+        "-q,  --quantum <N>         Time quantum for Round Robin (default 1)\n"
+        "-h,  --help                Show this help message\n",
+        progname);
+}
 
 
 
@@ -171,33 +199,52 @@ void run_scheduler() {
     int processes_finished = 0;
     int time_slice = 0;
     Process* current_running = NULL;
+    int execution_start = -1;
 
     while (processes_finished < process_count) {
         pthread_mutex_lock(&scheduler_mutex);
 
         // 1. Check for new arrivals
         for (int i = 0; i < process_count; i++) {
-            if (processes[i].arrival == current_time && !processes[i].in_ready_queue) {
+            if (processes[i].arrival == current_time && !processes[i].in_ready_queue && !processes[i].finished) {
                 enqueue_process(&processes[i]);
             }
         }
 
         // 2. Handle preemption for RR (time quantum expired)
         if (algorithm == RR && current_running != NULL && !current_running->finished && time_slice >= time_quantum) {
+            // Record Gantt entry
+            if (execution_start != -1) {
+                strcpy(gantt_chart[gantt_count].pid, current_running->pid);
+                gantt_chart[gantt_count].start = execution_start;
+                gantt_chart[gantt_count].end = current_time;
+                gantt_count++;
+            }
+            
             // Re-queue the preempted process
             enqueue_process(current_running);
             current_running = NULL;
             time_slice = 0;
+            execution_start = -1;
         }
         // 2b. Handle preemption for Priority
         else if (algorithm == PRIORITY && current_running != NULL && !current_running->finished) {
             // Check if a higher priority process is available
             for (int i = 0; i < ready_count; i++) {
                 if (ready_queue[i]->priority < current_running->priority) {
+                    // Record Gantt entry
+                    if (execution_start != -1) {
+                        strcpy(gantt_chart[gantt_count].pid, current_running->pid);
+                        gantt_chart[gantt_count].start = execution_start;
+                        gantt_chart[gantt_count].end = current_time;
+                        gantt_count++;
+                    }
+                    
                     // Preempt current process
                     enqueue_process(current_running);
                     current_running = NULL;
                     time_slice = 0;
+                    execution_start = -1;
                     break;
                 }
             }
@@ -205,11 +252,24 @@ void run_scheduler() {
 
         // 3. Select next process if none is running
         if (current_running == NULL || current_running->finished) {
+            if (current_running != NULL && current_running->finished) {
+                // Record Gantt entry for finished process
+                if (execution_start != -1) {
+                    strcpy(gantt_chart[gantt_count].pid, current_running->pid);
+                    gantt_chart[gantt_count].start = execution_start;
+                    gantt_chart[gantt_count].end = current_time;
+                    gantt_count++;
+                    execution_start = -1;
+                }
+                processes_finished++;
+            }
+            
             current_running = select_next_process();
             time_slice = 0;
             
             if (current_running != NULL) {
                 dequeue_process(current_running);  // Remove from ready queue
+                execution_start = current_time;    // Mark when this process starts
             }
         }
 
@@ -221,13 +281,6 @@ void run_scheduler() {
             sem_wait(&scheduler_sem);               // Wait for it to finish cycle
             
             time_slice++;
-            
-            pthread_mutex_lock(&scheduler_mutex);
-            if (current_running->finished) {
-                processes_finished++;
-                current_running = NULL;
-            }
-            pthread_mutex_unlock(&scheduler_mutex);
         }
 
         // 5. Advance time
@@ -378,15 +431,56 @@ void print_results() {
     printf("Avg Turn = %.2f\n", avg_turn);
     printf("Throughput = %.2f jobs/unit time\n", (float)process_count / current_time);
     printf("CPU Utilization = 100%%\n\n");  // Assuming no idle time for now
+
+    print_gantt_chart();
+}
+
+void print_gantt_chart() {
+    if (gantt_count == 0) return;
+    
+    printf("\nTimeline (Gantt Chart):\n");
+    
+    // Print time markers
+    for (int i = 0; i < gantt_count; i++) {
+        printf("%-9d", gantt_chart[i].start);
+    }
+    printf("%d\n", gantt_chart[gantt_count - 1].end);
+    
+    // Print top separator
+    for (int i = 0; i < gantt_count; i++) {
+        printf("|--------");
+    }
+    printf("|\n");
+    
+    // Print process names
+    for (int i = 0; i < gantt_count; i++) {
+        int pid_len = strlen(gantt_chart[i].pid);
+        int padding_left = (8 - pid_len) / 2;
+        int padding_right = 8 - pid_len - padding_left;
+        
+        printf("|");
+        for (int j = 0; j < padding_left; j++) printf(" ");
+        printf("%s", gantt_chart[i].pid);
+        for (int j = 0; j < padding_right; j++) printf(" ");
+    }
+    printf("|\n");
+    
+    // Print bottom separator
+    for (int i = 0; i <= gantt_count; i++) {
+        printf("--------");
+    }
+    printf("-\n");
 }
 
 
 
 int main(int argc, char* argv[]) {
     processes = malloc(sizeof(Process) * MAX_PROCESSES);
+    sem_init(&scheduler_sem, 0, 0);
+
     char* filename = NULL;
     int algo_set = 0;
-    sem_init(&scheduler_sem, 0, 0);
+    
 
     static struct option long_opts[] = {
         {"fcfs", no_argument, 0, 'f'},
@@ -395,11 +489,12 @@ int main(int argc, char* argv[]) {
         {"priority", no_argument, 0, 'p'},
         {"input", required_argument, 0, 'i'},
         {"quantum", required_argument, 0, 'q'},
+        {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "fsrpi:q:", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "fsrpi:q:h", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'f': 
                 algorithm = FCFS; 
@@ -423,28 +518,40 @@ int main(int argc, char* argv[]) {
             case 'q': 
                 time_quantum = atoi(optarg); 
                 break;
+            case 'h': // If the user needs help, print it, but then clean up
+                print_usage(argv[0]);
+                free(processes);
+                sem_destroy(&scheduler_sem);
+                exit(0);
             default:
-                fprintf(stderr, "Usage: %s -f|-s|-r|-p -i <file> [-q <quantum>]\n", argv[0]);
-                return 1;
+                print_usage(argv[0]);
+                free(processes);
+                sem_destroy(&scheduler_sem);
+                exit(1);
         }
     }
+
     if (!algo_set || !filename) {
-        fprintf(stderr, "Error: must specify algorithm and input file.\n");
+        fprintf(stderr, "Error: must specify algorithm and input file.\n\n");
+        print_usage(argv[0]);
+        free(processes);
+        sem_destroy(&scheduler_sem);
         return 1;
     }
 
     parse_file(filename);
 
     spawn_threads();
-    
+
     run_scheduler();
+
+    wait_threads();
 
     sem_destroy(&scheduler_sem);
     pthread_mutex_destroy(&scheduler_mutex);
-    
+
     print_results();
 
-    wait_threads();
     free(processes);
 
     return 0;
