@@ -2,7 +2,7 @@ Name: Kamron Swingle
 Course: CPSC 380 - Operating Systems
 Email: swingle@chapman.edu
 Assignment: Assignment 4 - CPU Scheduling Simulator
-File: schedsim.c
+Required Files: schedsim.c, processes.csv
 School: Chapman University
 
 Help Recieved from freind outside of school for basic debugging and process cleanup, more optimizing:
