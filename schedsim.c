@@ -81,6 +81,9 @@ int gantt_count = 0;
 sem_t scheduler_sem; // global semaphore for scheduler to signal processes
 pthread_mutex_t scheduler_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// global utilization
+float cpu_utilization = 0.0;
+
 // Function prototypes
 
 // initialaization and cleanup
@@ -367,14 +370,16 @@ Process* select_next_process() {
 
 void run_scheduler(void) {
     int processes_finished = 0;
-    int time_slice = 0;
     Process *current_running = NULL;
+    int quantum_remaining = 0;
+    int cpu_busy_cycles = 0;
     int execution_start = -1;
 
+    // Continue until all processes finish
     while (processes_finished < process_count) {
         pthread_mutex_lock(&scheduler_mutex);
 
-        // step 1: Check for new arrivals
+        // STEP 1: Check for arrivals at current_time
         for (int i = 0; i < process_count; i++) {
             if (processes[i].arrival == current_time && 
                 !processes[i].in_ready_queue && 
@@ -383,12 +388,29 @@ void run_scheduler(void) {
             }
         }
 
-        // step 2a: Handle Round Robin preemption (time quantum expired)
-        if (algorithm == RR && current_running != NULL && 
-            !current_running->finished && time_slice >= time_quantum) {
+        // STEP 2: Handle preemption checks
+        int should_preempt = 0;
+        
+        if (current_running != NULL && !current_running->finished) {
+            // RR: Check quantum expiration
+            if (algorithm == RR && quantum_remaining <= 0) {
+                should_preempt = 1;
+            }
             
-            // record the partial execution of the preempted process
-            if (execution_start != -1 && gantt_count < MAX_GANTT) {
+            // Priority: Check for higher priority in ready queue
+            if (algorithm == PRIORITY) {
+                for (int i = 0; i < ready_count; i++) {
+                    if (ready_queue[i]->priority < current_running->priority) {
+                        should_preempt = 1;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (should_preempt) {
+            // Record partial execution in Gantt chart
+            if (execution_start != -1) {
                 strcpy(gantt_chart[gantt_count].pid, current_running->pid);
                 gantt_chart[gantt_count].start = execution_start;
                 gantt_chart[gantt_count].end = current_time;
@@ -397,76 +419,56 @@ void run_scheduler(void) {
             
             enqueue_process(current_running);
             current_running = NULL;
-            time_slice = 0;
             execution_start = -1;
         }
-        
-        // step 2b: Handle Priority preemption
-        else if (algorithm == PRIORITY && current_running != NULL && 
-                 !current_running->finished) {
-            
-            // Look for a process with higher priority (lower number)
-            for (int i = 0; i < ready_count; i++) {
-                Process *candidate = ready_queue[i];
-                if (candidate->priority < current_running->priority) {
-                    
-                    // Record the partial execution of the preempted process
-                    if (execution_start != -1 && gantt_count < MAX_GANTT) {
-                        strcpy(gantt_chart[gantt_count].pid, current_running->pid);
-                        gantt_chart[gantt_count].start = execution_start;
-                        gantt_chart[gantt_count].end = current_time;
-                        gantt_count++;
-                    }
-                    
-                    // Requeue the preempted process
-                    enqueue_process(current_running);
-                    
-                    // Switch to the higher priority process
-                    current_running = NULL;
-                    execution_start = -1;
-                    time_slice = 0;
-                    
-                    // Forces rescheduling to pick the higher-priority process
-                    break;
-                }
-            }
-        }
 
-        // step 3: Select next process if none is running
+        // STEP 3: Select next process if needed
         if (current_running == NULL || current_running->finished) {
             if (current_running != NULL && current_running->finished) {
-                if (execution_start != -1 && gantt_count < MAX_GANTT) {
+                // Record finished process in Gantt
+                if (execution_start != -1) {
                     strcpy(gantt_chart[gantt_count].pid, current_running->pid);
                     gantt_chart[gantt_count].start = execution_start;
                     gantt_chart[gantt_count].end = current_time;
                     gantt_count++;
-                    execution_start = -1;
                 }
                 processes_finished++;
             }
             
             current_running = select_next_process();
-            time_slice = 0;
             
             if (current_running != NULL) {
                 dequeue_process(current_running);
                 execution_start = current_time;
+                quantum_remaining = time_quantum;
             }
         }
 
-        // step 4: Execute one cycle if we have a process
-        if (current_running != NULL) {
+        // STEP 4: Execute ONE cycle
+        if (current_running != NULL && processes_finished < process_count) {
+            cpu_busy_cycles++;
+            
+            // Dispatch for ONE cycle
             pthread_mutex_unlock(&scheduler_mutex);
             sem_post(&current_running->semaphore);
             sem_wait(&scheduler_sem);
-            time_slice++;
+            
+            quantum_remaining--;
+            
         } else {
+            // CPU idle this cycle
             pthread_mutex_unlock(&scheduler_mutex);
         }
 
-        // Step 5: Advance time
-        current_time++;
+        // STEP 5: Advance clock by 1 (only if we have not finished yet)
+        if (processes_finished < process_count) {
+            current_time++; // this fixes issue with less than 100% utilization issue
+        }
     }
+    
+    // Calculate actual CPU utilization
+    cpu_utilization = (float)cpu_busy_cycles / current_time * 100.0;
+    // Store for later printing
 }
 
 // printing results
@@ -524,8 +526,7 @@ void print_results() {
     printf("Avg Resp = %.2f\n", avg_resp);
     printf("Avg Turn = %.2f\n", avg_turn);
     printf("Throughput = %.2f jobs/unit time\n", (float)process_count / current_time);
-    printf("CPU Utilization = 100%%\n\n");  // Assuming no idle time for now
-
+    printf("CPU Utilization = %.2f%%\n\n", cpu_utilization);  // Oops, left this hard coded as 100% earlier for testing
     print_gantt_chart();
 }
 
@@ -546,7 +547,7 @@ void print_gantt_chart() {
     }
     printf("|\n");
     
-    // Print process names
+    // Print process names, note ChatGPT did help me with this, mentioned in README
     for (int i = 0; i < gantt_count; i++) {
         int pid_len = strlen(gantt_chart[i].pid);
         int padding_left = (8 - pid_len) / 2;
