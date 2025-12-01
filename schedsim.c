@@ -247,6 +247,7 @@ void parse_file(const char* filename) {
         process->turnaround_time = 0;
         process->in_ready_queue = 0;
         process->finished = 0;
+        process->started = 0;
         sem_init(&process->semaphore, 0, 0); // Initialize semaphore
         process_count++;
         lineNum++;
@@ -282,18 +283,13 @@ void* process_thread(void *arg) {
         
         // Execute one unit of work
         if (process->remaining_time > 0) {
-            if (!process->started) {
-                process->started = 1;
-                process->start_time = current_time;
-                process->response_time = current_time - process->arrival;  // Calculate response time
-            }
             process->remaining_time--;
         }
         
         // Check if finished
         if (process->remaining_time == 0) {
             process->finished = 1;
-            process->finish_time = current_time + 1; // +1 because we finish at end of this time unit
+            process->finish_time = current_time + 1;
             process->turnaround_time = process->finish_time - process->arrival;
         }
         
@@ -379,7 +375,7 @@ void run_scheduler(void) {
     while (processes_finished < process_count) {
         pthread_mutex_lock(&scheduler_mutex);
 
-        // STEP 1: Check for arrivals at current_time
+        // Step 1: Check for arrivals at current_time
         for (int i = 0; i < process_count; i++) {
             if (processes[i].arrival == current_time && 
                 !processes[i].in_ready_queue && 
@@ -388,10 +384,11 @@ void run_scheduler(void) {
             }
         }
 
-        // STEP 2: Handle preemption checks
+
+        // STEP 2: Now check for preemption after arrivals
         int should_preempt = 0;
-        
-        if (current_running != NULL && !current_running->finished) {
+
+            if (current_running != NULL && !current_running->finished) {
             // RR: Check quantum expiration
             if (algorithm == RR && quantum_remaining <= 0) {
                 should_preempt = 1;
@@ -407,7 +404,7 @@ void run_scheduler(void) {
                 }
             }
         }
-        
+
         if (should_preempt) {
             // Record partial execution in Gantt chart
             if (execution_start != -1) {
@@ -421,6 +418,8 @@ void run_scheduler(void) {
             current_running = NULL;
             execution_start = -1;
         }
+
+
 
         // STEP 3: Select next process if needed
         if (current_running == NULL || current_running->finished) {
@@ -438,6 +437,12 @@ void run_scheduler(void) {
             current_running = select_next_process();
             
             if (current_running != NULL) {
+
+                if (current_running->start_time == -1) {
+                    current_running->started = 1;
+                    current_running->start_time = current_time;
+                    current_running->response_time = current_time - current_running->arrival;
+                }
                 dequeue_process(current_running);
                 execution_start = current_time;
                 quantum_remaining = time_quantum;

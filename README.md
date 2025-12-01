@@ -95,3 +95,9 @@ Demo Run (FCFS):
 
 Demo Run (Round Robin)
 ./schedsim -rr -q 3 -i processes.csv
+
+Note: The CSV cannot have an extra newline character under the last line of entry for example
+
+...
+P4, x, x, x
+blank and cursor left here WILL NOT WORK
